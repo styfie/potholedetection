@@ -32,6 +32,15 @@ LABEL_DIR = next((p for p in LABEL_DIR_CANDIDATES if p.is_dir()), LABEL_DIR_CAND
 IOU_MATCH_THRESHOLD = 0.50
 AP_CONFIDENCE_FLOOR = 0.001
 
+# Nama model yang ditampilkan di hasil dan riwayat chart (tanpa nama skenario).
+MODEL_DISPLAY = {
+    ("YOLO26", "Nano (n)"): "YOLO26n",
+    ("YOLO26", "Small (s)"): "YOLO26s",
+    ("YOLO26", "Medium (m)"): "YOLO26m",
+    ("YOLO26", "Large (l)"): "YOLO26l",
+    ("RT-DETR", "Large (L)"): "RT-DETR-L",
+}
+
 
 def find_label_file(image_name: str):
     """Cari .txt berdasarkan nama dasar gambar; None jika tidak ada."""
@@ -436,7 +445,7 @@ if "result" not in st.session_state:
 if "history" not in st.session_state:
     st.session_state.history = []
 if "scenario" not in st.session_state:
-    st.session_state.scenario = ""
+    st.session_state.scenario = "combined"
 if "model_family" not in st.session_state:
     st.session_state.model_family = "YOLO26"
 if "model_variant" not in st.session_state:
@@ -560,8 +569,7 @@ with left:
                 st.warning(f"Please select an {source.lower()} first.")
             else:
                 try:
-                    model_label, _ = MODELS[(model_family, variant)]
-                    model_label = f"{st.session_state.scenario.replace('_', ' ').title()} · {model_label}"
+                    model_label = MODEL_DISPLAY.get((model_family, variant), f"{model_family} {variant}")
                     with st.spinner(f"Loading {model_label}..."):
                         model = load_model(model_family, variant, st.session_state.scenario)
                     if source == "Image":
