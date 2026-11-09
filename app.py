@@ -26,19 +26,31 @@ st.set_page_config(page_title="Pothole Detection System", page_icon="🛣️", l
 # Per-image evaluation settings
 # ---------------------------------------------------------------------------
 METRIC_NAMES = ["Precision", "Recall", "F1-Score", "mAP50", "mAP50-95"]
-LABEL_DIR = ROOT.parent / "selected-data-display"
+# Folder label dicari di dalam repo dulu, lalu di folder induknya (untuk jalan lokal lama).
+LABEL_DIR_CANDIDATES = [ROOT / "selected-data-display", ROOT.parent / "selected-data-display"]
+LABEL_DIR = next((p for p in LABEL_DIR_CANDIDATES if p.is_dir()), LABEL_DIR_CANDIDATES[0])
 IOU_MATCH_THRESHOLD = 0.50
 AP_CONFIDENCE_FLOOR = 0.001
 
 
+def find_label_file(image_name: str):
+    """Cari .txt berdasarkan nama dasar gambar; None jika tidak ada."""
+    stem = Path(image_name).stem
+    exact = LABEL_DIR / f"{stem}.txt"
+    if exact.is_file():
+        return exact
+    if LABEL_DIR.is_dir():  # fallback tanpa membedakan huruf besar/kecil (Linux case-sensitive)
+        for candidate in LABEL_DIR.glob("*.txt"):
+            if candidate.stem.lower() == stem.lower():
+                return candidate
+    return None
+
+
 def load_yolo_labels(image_name: str, image_width: int, image_height: int):
-    """Load the matching YOLO-format .txt label from selected-data-display."""
-    label_path = LABEL_DIR / f"{Path(image_name).stem}.txt"
-    if not label_path.is_file():
-        raise FileNotFoundError(
-            f"Label pasangan tidak ditemukan: {label_path}. "
-            "Pastikan file .txt memiliki nama dasar yang sama dengan gambar."
-        )
+    """Load label YOLO. Mengembalikan None jika file label tidak ada."""
+    label_path = find_label_file(image_name)
+    if label_path is None:
+        return None
 
     boxes = []
     for line_number, line in enumerate(label_path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -397,21 +409,24 @@ def performance_panel(family: str, variant: str, scenario: str, result: dict | N
         if result and result.get("kind") == "image":
             evaluation = result.get("stats", {}).get("evaluation")
 
+        # Tanpa label: tidak ada metrik dan tidak ada bar chart.
+        if evaluation is None:
+            if result and result.get("kind") == "image":
+                st.caption("Label tidak ditemukan untuk gambar ini, sehingga metrik tidak ditampilkan.")
+            else:
+                st.caption("Run detection on an image to fill in these metrics.")
+            return
+
         metric_keys = [
             ("Precision", "precision"), ("Recall", "recall"), ("F1-Score", "f1"),
             ("mAP50", "map50"), ("mAP50-95", "map5095"),
         ]
         for name, key in metric_keys:
-            value = f"{evaluation[key]:.4f}" if evaluation else "–"
             st.markdown(
                 f'<div class="perf-row"><span class="perf-name">{name}</span>'
-                f'<span class="perf-value">{value}</span></div>',
+                f'<span class="perf-value">{evaluation[key]:.4f}</span></div>',
                 unsafe_allow_html=True,
             )
-
-        if evaluation is None:
-            st.caption("Run detection on an image to fill in these metrics.")
-            return
 
         st.markdown('<div class="perf-subheading" style="margin-top:16px">Per-Image Run History</div>', unsafe_allow_html=True)
         st.altair_chart(history_chart(st.session_state.history), use_container_width=True)
@@ -550,20 +565,25 @@ with left:
                     with st.spinner(f"Loading {model_label}..."):
                         model = load_model(model_family, variant, st.session_state.scenario)
                     if source == "Image":
-                        with st.spinner("Detecting and evaluating this image..."):
+                        with st.spinner("Detecting this image..."):
                             frame = decode_image(upload.getvalue())
                             annotated, count, ms = predict(frame, model, float(confidence))
                             height, width = frame.shape[:2]
                             ground_truth = load_yolo_labels(upload.name, width, height)
-                            # Re-run at a low confidence floor so AP can rank detections
-                            # across confidence levels; the displayed annotation remains
-                            # based on the user-selected confidence threshold.
-                            ap_results = model.predict(
-                                source=frame, conf=AP_CONFIDENCE_FLOOR, iou=0.50,
-                                device=0 if __import__("torch").cuda.is_available() else "cpu",
-                                verbose=False,
-                            )
-                            evaluation = evaluate_single_image(ap_results[0], ground_truth, float(confidence))
+
+                            # Metrik hanya dihitung jika file label pasangan ditemukan.
+                            evaluation = None
+                            if ground_truth is not None:
+                                # Re-run at a low confidence floor so AP can rank detections
+                                # across confidence levels; the displayed annotation remains
+                                # based on the user-selected confidence threshold.
+                                ap_results = model.predict(
+                                    source=frame, conf=AP_CONFIDENCE_FLOOR, iou=0.50,
+                                    device=0 if __import__("torch").cuda.is_available() else "cpu",
+                                    verbose=False,
+                                )
+                                evaluation = evaluate_single_image(ap_results[0], ground_truth, float(confidence))
+
                             rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
                             stats = {
                                 "detections": count, "inference_time_ms": ms,
@@ -574,19 +594,20 @@ with left:
                                 "confidence": float(confidence), "stats": stats,
                                 "image_name": upload.name,
                             }
-                            run_number = len(st.session_state.history) + 1
-                            st.session_state.history.append({
-                                "label": f"#{run_number} {model_label} · {Path(upload.name).stem}",
-                                "metrics": {
-                                    "Precision": evaluation["precision"],
-                                    "Recall": evaluation["recall"],
-                                    "F1-Score": evaluation["f1"],
-                                    "mAP50": evaluation["map50"],
-                                    "mAP50-95": evaluation["map5095"],
-                                },
-                            })
-                            # Keep the chart readable during longer sessions.
-                            st.session_state.history = st.session_state.history[-10:]
+                            if evaluation is not None:
+                                run_number = len(st.session_state.history) + 1
+                                st.session_state.history.append({
+                                    "label": f"#{run_number} {model_label} · {Path(upload.name).stem}",
+                                    "metrics": {
+                                        "Precision": evaluation["precision"],
+                                        "Recall": evaluation["recall"],
+                                        "F1-Score": evaluation["f1"],
+                                        "mAP50": evaluation["map50"],
+                                        "mAP50-95": evaluation["map5095"],
+                                    },
+                                })
+                                # Keep the chart readable during longer sessions.
+                                st.session_state.history = st.session_state.history[-10:]
                     else:
                         progress = st.progress(0.0, text="Processing video...")
                         with st.spinner("Processing video frames and encoding MP4..."):
