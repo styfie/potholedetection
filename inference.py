@@ -1,6 +1,6 @@
 """Inference layer shared by image, video, and browser camera."""
 from __future__ import annotations
-import os
+
 import subprocess
 import tempfile
 import threading
@@ -14,6 +14,7 @@ import torch
 from ultralytics import RTDETR, YOLO
 
 ROOT = Path(__file__).resolve().parent
+
 MODELS = {
     ("YOLO26", "Nano (n)"): ("YOLO26n", "yolo26n.pt"),
     ("YOLO26", "Small (s)"): ("YOLO26s", "yolo26s.pt"),
@@ -21,6 +22,7 @@ MODELS = {
     ("YOLO26", "Large (l)"): ("YOLO26l", "yolo26l.pt"),
     ("RT-DETR", "Large (L)"): ("RT-DETR-L", "rtdetr-l.pt"),
 }
+SCENARIOS = {"pure", "domain_adapt", "combined"}
 VIDEO_TARGET_FPS = 10.0
 VIDEO_IMGSZ = 640
 VIDEO_IOU = 0.50
@@ -35,21 +37,26 @@ def device_label():
     return "CUDA" if torch.cuda.is_available() else "CPU"
 
 
-@st.cache_resource(show_spinner=False, max_entries=1)
-def load_model(model_family: str, variant: str):
+@st.cache_resource(show_spinner=False, max_entries=15)
+def load_model(model_family: str, variant: str, scenario: str = "pure"):
+    if scenario not in SCENARIOS:
+        raise ValueError(f"Training scenario tidak dikenal: {scenario}")
     model_name, filename = MODELS[(model_family, variant)]
-    checkpoint = ROOT / "models" / filename
+    checkpoint = ROOT / "models" / scenario / filename
     if not checkpoint.is_file():
         raise FileNotFoundError(
-            f"Checkpoint {filename} belum tersedia. Letakkan file di folder models/."
+            f"Checkpoint {model_name} untuk skenario '{scenario}' tidak ditemukan: "
+            f"{checkpoint}"
         )
     model = RTDETR(str(checkpoint)) if model_family == "RT-DETR" else YOLO(str(checkpoint))
     return model
 
 
 def predict(image_bgr, model, confidence: float, imgsz: int | None = None):
-    kwargs = dict(source=image_bgr, conf=confidence, iou=VIDEO_IOU,
-                  device=device(), verbose=False)
+    kwargs = dict(
+        source=image_bgr, conf=confidence, iou=VIDEO_IOU,
+        device=device(), verbose=False,
+    )
     if imgsz is not None:
         kwargs["imgsz"] = imgsz
     with INFERENCE_LOCK:
@@ -95,16 +102,15 @@ def process_video(video_bytes: bytes, suffix: str, model, confidence: float,
                 raise ValueError("Resolusi video tidak valid.")
             target_fps = min(fps, VIDEO_TARGET_FPS)
             interval = max(1, round(fps / target_fps))
-            # Effective sampled frame rate keeps original video duration.
             sampled_fps = fps / interval
-            writer = cv2.VideoWriter(str(raw), cv2.VideoWriter_fourcc(*"mp4v"),
-                                     sampled_fps, (width, height))
+            writer = cv2.VideoWriter(
+                str(raw), cv2.VideoWriter_fourcc(*"mp4v"),
+                sampled_fps, (width, height),
+            )
             if not writer.isOpened():
                 raise RuntimeError("Tidak dapat membuat video sementara.")
             start = time.perf_counter()
-            processed = 0
-            detections = 0
-            frames_with_detections = 0
+            processed = detections = frames_with_detections = 0
             inference_sum = 0.0
             frame_index = 0
             while True:
@@ -127,10 +133,13 @@ def process_video(video_bytes: bytes, suffix: str, model, confidence: float,
             cap.release()
             if writer is not None:
                 writer.release()
-        # Re-encode to H.264 for browsers. Streamlit Cloud uses packages.txt for ffmpeg.
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(raw),
-               "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-               "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(output)]
+
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(raw), "-c:v", "libx264", "-preset", "veryfast",
+            "-crf", "23", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", "-an", str(output),
+        ]
         run = subprocess.run(cmd, capture_output=True, text=True)
         if run.returncode != 0:
             raise RuntimeError("FFmpeg gagal mengonversi video: " + run.stderr[-500:])

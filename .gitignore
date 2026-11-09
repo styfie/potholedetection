@@ -20,5 +20,13 @@ tmp/
 Thumbs.db
 .vscode/
 
+# Models excluded from repository
+models/domain_adapt/
+models/pure/
+
 # Keep model checkpoints in repository
 !models/*.pt
+
+# Unused ground truth helpers
+ground_truth.py
+data/ground_truth_counts.json
