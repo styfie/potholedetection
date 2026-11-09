@@ -436,7 +436,7 @@ if "result" not in st.session_state:
 if "history" not in st.session_state:
     st.session_state.history = []
 if "scenario" not in st.session_state:
-    st.session_state.scenario = "combined"
+    st.session_state.scenario = ""
 if "model_family" not in st.session_state:
     st.session_state.model_family = "YOLO26"
 if "model_variant" not in st.session_state:
